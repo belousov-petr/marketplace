@@ -1,0 +1,22 @@
+{
+  "name": "belousov-petr",
+  "owner": {
+    "name": "belousov-petr",
+    "url": "https://github.com/belousov-petr"
+  },
+  "metadata": {
+    "description": "belousov-petr's Claude Code plugin catalog — add once, install any plugin."
+  },
+  "plugins": [
+    {
+      "name": "strata",
+      "source": {
+        "source": "github",
+        "repo": "belousov-petr/strata"
+      },
+      "description": "Keeps a project's documentation in step with what it actually does: decisions, specs, issues, runbooks, and layered memory as plain Markdown under .strata/, brought current on one save command. Shared by Claude Code and Codex.",
+      "version": "0.0.3",
+      "keywords": ["memory", "documentation", "strata", "agents", "codex"]
+    }
+  ]
+}
