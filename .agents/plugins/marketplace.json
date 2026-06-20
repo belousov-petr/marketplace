@@ -1,0 +1,20 @@
+{
+  "name": "belousov-petr",
+  "interface": {
+    "displayName": "belousov-petr"
+  },
+  "plugins": [
+    {
+      "name": "strata",
+      "source": {
+        "source": "local",
+        "path": "./plugins/strata"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
