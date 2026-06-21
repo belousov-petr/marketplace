@@ -5,7 +5,7 @@
     "url": "https://github.com/belousov-petr"
   },
   "metadata": {
-    "description": "belousov-petr's Claude Code plugin catalog — add once, install any plugin."
+    "description": "belousov-petr's agentic plugins catalog for Claude Code and Codex. Add once, install any plugin."
   },
   "plugins": [
     {
