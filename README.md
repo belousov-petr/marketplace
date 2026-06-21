@@ -9,7 +9,7 @@ below.
 
 | Plugin | What it does |
 |---|---|
-| **strata** | Keeps a project's docs, decisions, issues, and layered memory in step with the code, under `.strata/`. |
+| [**strata**](https://github.com/belousov-petr/strata) | Keeps a project's docs, decisions, issues, and layered memory in step with the code, under `.strata/`. |
 
 ## Install
 
@@ -30,18 +30,21 @@ codex plugin add strata@belousov-petr
 
 ## Staying updated
 
-Once a plugin is installed, new versions arrive on their own:
+> [!TIP]
+> **Don't forget to turn on auto-updates.** In Claude Code they are off until you switch them on: `/plugin` → **Marketplaces** → **belousov-petr** → enable auto-update. Codex updates on its own.
 
-- **Claude Code:** turn on auto-update for this catalog (`/plugin` → **Marketplaces** →
-  **belousov-petr** → enable auto-update), then run `/reload-plugins` after it updates.
-- **Codex:** automatic at startup; start a new thread to load a new version.
+After that, new versions arrive without you doing anything:
+
+- **Claude Code:** updates at startup; run `/reload-plugins` once it does.
+- **Codex:** updates at startup; start a new thread to load it.
 
 To update by hand: Claude `claude plugin update <plugin>@belousov-petr`, or Codex
 `codex plugin marketplace upgrade belousov-petr` then a new thread.
 
 ## For maintainers
 
-Each plugin's Claude entry points at the plugin's own repo; the Codex side keeps a
-vendored copy under `plugins/<plugin>/`. When a plugin cuts a release, a GitHub Action
-re-syncs this catalog on its own (it also runs on a schedule, and can be run by hand from
-the **Actions** tab). The workflow files under `.github/workflows/` have the setup details.
+Claude Code and Codex install plugins from this catalog, not from each plugin's own repo.
+So a plugin's new version only reaches people after the catalog is updated to point at it.
+That update is automatic: a GitHub Action refreshes the catalog whenever a plugin
+publishes a release. It also runs on a schedule, and you can run it by hand from the
+**Actions** tab. The workflow files under `.github/workflows/` explain how it works.
