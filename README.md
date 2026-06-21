@@ -55,3 +55,9 @@ git add -A && git commit -m "strata: sync to <version>" && git push
 `sync-strata.sh` re-vendors the Codex package under `plugins/strata/` and bumps the
 Claude catalog's version label to match strata's `plugin.json`. Once pushed, the new
 version auto-lands per **Auto-updates** above.
+
+You don't have to run it by hand: the [`sync-strata`](.github/workflows/sync-strata.yml)
+GitHub Action runs it on a schedule and on demand. After a strata release, trigger an
+instant sync from the repo's **Actions** tab → **sync-strata** → **Run workflow**. The
+Action needs Settings → Actions → General → **Workflow permissions** set to **Read and
+write** so it can push the sync commit.
