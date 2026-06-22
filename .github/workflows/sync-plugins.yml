@@ -1,0 +1,57 @@
+name: sync-plugins
+
+# Keep this catalog's vendored Codex packages + Claude version labels in step with the
+# source repos, so Claude Code and Codex consumers auto-update. Sources are PUBLIC, so the
+# default GITHUB_TOKEN checks them out — no read tokens needed.
+#
+# Generalized from the original single-strata sync so the catalog can grow to many plugins:
+# add a checkout step per new source and a vendor line in sync-plugins.sh.
+#
+# Schedule = catch-all; workflow_dispatch = instant sync; repository_dispatch is fired by a
+# source repo's notify-marketplace.yml on a release tag. Accepts both the canonical
+# plugin-released (use this for new sources) and strata's existing strata-released.
+
+on:
+  schedule:
+    - cron: "0 */6 * * *" # every 6 hours
+  workflow_dispatch: {}
+  repository_dispatch:
+    types: [plugin-released, strata-released]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-plugins
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout marketplace
+        uses: actions/checkout@v5
+
+      - name: Checkout strata (public)
+        uses: actions/checkout@v5
+        with:
+          repository: belousov-petr/strata
+          ref: main
+          path: src/strata
+
+      - name: Sync packages into the catalog
+        run: bash ./sync-plugins.sh ./src/strata
+
+      - name: Commit and push if changed
+        run: |
+          set -euo pipefail
+          if [ -z "$(git status --porcelain -- plugins .claude-plugin/marketplace.json)" ]; then
+            echo "Catalog already matches sources — nothing to sync."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A -- plugins .claude-plugin/marketplace.json
+          git commit -m "sync: re-vendor packages + bump catalog labels"
+          git push
+          echo "Synced catalog."
