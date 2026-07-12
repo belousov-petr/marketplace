@@ -15,7 +15,7 @@
         "repo": "belousov-petr/strata"
       },
       "description": "Keeps a project's documentation in step with what it actually does: decisions, specs, issues, runbooks, and layered memory as plain Markdown under .strata/, brought current on one save command. Shared by Claude Code and Codex.",
-      "version": "0.0.7",
+      "version": "0.0.8",
       "keywords": ["memory", "documentation", "strata", "agents", "codex"]
     }
   ]
