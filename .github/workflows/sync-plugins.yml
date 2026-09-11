@@ -68,8 +68,8 @@ jobs:
 
       # Pushes with KEEPALIVE_PAT, not GITHUB_TOKEN: GitHub never documents what counts as
       # "repository activity", so this deliberately does not rely on a bot push resetting the
-      # timer. The token carries no expiry, but fail the run on a missing or revoked one rather
-      # than skipping quietly: a silent keepalive lets the repo go dark again 60 days later.
+      # timer. Fail the run when the secret is unusable rather than skipping quietly: a silent
+      # keepalive lets the repo go dark again 60 days later.
       - name: Keepalive (reset GitHub's 60-day inactivity timer)
         env:
           KEEPALIVE_PAT: ${{ secrets.KEEPALIVE_PAT }}
