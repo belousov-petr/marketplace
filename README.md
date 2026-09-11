@@ -48,3 +48,22 @@ So a plugin's new version only reaches people after the catalog is updated to po
 That update is automatic: a GitHub Action refreshes the catalog whenever a plugin
 publishes a release. It also runs on a schedule, and you can run it by hand from the
 **Actions** tab. The workflow files under `.github/workflows/` explain how it works.
+
+### Why there are empty "keepalive" commits
+
+GitHub switches off scheduled Actions on a public repo after 60 days with no repository
+activity, and it did exactly that here on 2026-09-10. The sync kept running four times a
+day, kept finding the catalog already correct, and so committed nothing. After 60 quiet
+days GitHub read the repo as abandoned and parked the schedule. Nothing warns you; the
+sync just stops.
+
+So the sync now pushes an empty commit whenever the newest commit is more than 50 days
+old. Those `chore: keepalive` commits change no files and exist only to keep the schedule
+alive. They never appear while real updates are flowing, because a real sync commit
+already resets the clock.
+
+They are pushed with the `KEEPALIVE_PAT` secret, a fine-grained token with Contents
+read/write on this repo alone. Tokens expire. When this one does, the sync run **fails**
+and GitHub emails you, which is deliberate: a keepalive that dies quietly is worse than no
+keepalive at all. After renewing it, go to **Actions** → **sync-plugins** → **Run
+workflow**, tick **force_keepalive**, and confirm a keepalive commit lands.
