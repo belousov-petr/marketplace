@@ -51,19 +51,21 @@ publishes a release. It also runs on a schedule, and you can run it by hand from
 
 ### Why there are empty "keepalive" commits
 
-GitHub switches off scheduled Actions on a public repo after 60 days with no repository
-activity, and it did exactly that here on 2026-09-10. The sync kept running four times a
-day, kept finding the catalog already correct, and so committed nothing. After 60 quiet
-days GitHub read the repo as abandoned and parked the schedule. Nothing warns you; the
-sync just stops.
+GitHub turns off scheduled Actions on a public repo after 60 days with no commits. That
+happened here on 2026-09-10.
 
-So the sync now pushes an empty commit whenever the newest commit is more than 50 days
-old. Those `chore: keepalive` commits change no files and exist only to keep the schedule
-alive. They never appear while real updates are flowing, because a real sync commit
-already resets the clock.
+Nothing was broken. The sync ran four times a day, found the catalog already correct, and
+saved nothing. Sixty quiet days later GitHub decided the repo was abandoned and switched
+the schedule off. No warning, no failed run. It just stops.
 
-They are pushed with the `KEEPALIVE_PAT` secret, a fine-grained token with Contents
-read/write on this repo alone. Tokens expire. When this one does, the sync run **fails**
-and GitHub emails you, which is deliberate: a keepalive that dies quietly is worse than no
-keepalive at all. After renewing it, go to **Actions** → **sync-plugins** → **Run
-workflow**, tick **force_keepalive**, and confirm a keepalive commit lands.
+So the sync now makes an empty commit when the newest commit is over 50 days old. Those
+`chore: keepalive` commits change no files. They exist to restart the 60-day clock, and
+you won't see them while updates are flowing, because an ordinary sync commit restarts it
+anyway.
+
+The push uses the `KEEPALIVE_PAT` secret, a fine-grained token that can write to this repo
+and nothing else. Tokens expire. When this one does, the sync run fails and GitHub emails
+you. That's on purpose. A keepalive that stops working in silence is worse than none.
+
+After renewing the token, open **Actions** → **sync-plugins** → **Run workflow**, tick
+**force_keepalive**, and check that a keepalive commit lands.
