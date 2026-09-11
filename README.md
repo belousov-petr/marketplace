@@ -64,8 +64,9 @@ you won't see them while updates are flowing, because an ordinary sync commit re
 anyway.
 
 The push uses the `KEEPALIVE_PAT` secret, a fine-grained token that can write to this repo
-and nothing else. Tokens expire. When this one does, the sync run fails and GitHub emails
-you. That's on purpose. A keepalive that stops working in silence is worse than none.
+and nothing else. It has no expiry date, so there is no renewal to forget. If it is ever
+revoked or deleted, the sync run fails and GitHub emails you. That's on purpose. A
+keepalive that stops working in silence is worse than none.
 
-After renewing the token, open **Actions** → **sync-plugins** → **Run workflow**, tick
-**force_keepalive**, and check that a keepalive commit lands.
+To check the token still works, open **Actions** → **sync-plugins** → **Run workflow**,
+tick **force_keepalive**, and confirm a keepalive commit lands.
