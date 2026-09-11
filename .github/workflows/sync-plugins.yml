@@ -11,7 +11,7 @@ name: sync-plugins
 # source repo's notify-marketplace.yml on a release tag (event type: plugin-released).
 #
 # GitHub disables a public repo's scheduled workflows after 60 days with no repository
-# activity, and a sync run that finds nothing to do commits nothing — so a quiet catalog
+# activity, and a sync run that finds nothing to do commits nothing, so a quiet catalog
 # reads as an abandoned one. That is what parked this workflow on 2026-09-10 (last push
 # 2026-07-12, exactly 60 days). The keepalive step below pushes an empty commit once the
 # newest commit passes 50 days, which resets the timer with 10 days to spare.
@@ -22,7 +22,7 @@ on:
   workflow_dispatch:
     inputs:
       force_keepalive:
-        description: "Run the keepalive commit regardless of age (verifies KEEPALIVE_PAT still works)"
+        description: "Run the keepalive commit regardless of age (use after renewing the token, to check it still works)"
         type: boolean
         default: false
   repository_dispatch:
@@ -68,8 +68,8 @@ jobs:
 
       # Pushes with KEEPALIVE_PAT, not GITHUB_TOKEN: GitHub never documents what counts as
       # "repository activity", so this deliberately does not rely on a bot push resetting the
-      # timer. Fails the run on a missing/expired token rather than skipping quietly — a silent
-      # keepalive is worse than none, since the repo goes dark again 60 days later.
+      # timer. Fails the run on a missing/expired token rather than skipping quietly, because a
+      # silent keepalive is worse than none: the repo goes dark again 60 days later.
       - name: Keepalive (reset GitHub's 60-day inactivity timer)
         env:
           KEEPALIVE_PAT: ${{ secrets.KEEPALIVE_PAT }}
@@ -77,17 +77,17 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${KEEPALIVE_PAT}" ]; then
-            echo "::error::KEEPALIVE_PAT is missing or empty — cannot hold the schedule open."
+            echo "::error::KEEPALIVE_PAT is missing or empty, so the schedule cannot be held open."
             exit 1
           fi
           age_days=$(( ( $(date -u +%s) - $(git log -1 --format=%ct HEAD) ) / 86400 ))
           echo "Newest commit on main is ${age_days} day(s) old."
           if [ "${FORCE}" != "true" ] && [ "${age_days}" -lt 50 ]; then
-            echo "Under the 50-day threshold — no keepalive needed."
+            echo "Under the 50-day threshold, no keepalive needed."
             exit 0
           fi
           git config user.name  "belousov-petr"
           git config user.email "265922117+belousov-petr@users.noreply.github.com"
           git commit --allow-empty -m "chore: keepalive (reset GitHub's 60-day inactivity timer)"
           git push "https://x-access-token:${KEEPALIVE_PAT}@github.com/${GITHUB_REPOSITORY}.git" HEAD:main
-          echo "Keepalive pushed — the 60-day clock restarts today."
+          echo "Keepalive pushed. The 60-day clock restarts today."
