@@ -3,12 +3,15 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
-import { readLf, walk, relPosix, exists } from './core.mjs'
+import { readLf, walk, relPosix, exists, writeText, today } from './core.mjs'
 import { parseFrontmatter } from './frontmatter.mjs'
 import {
   readIssues, readLearnings, TYPES, STATUSES, SEVERITIES, ORIGINS, TERMINAL, LIVE,
 } from './model.mjs'
 import { syncViews } from './views.mjs'
+import { buildTriggerIndex } from './triggers.mjs'
+import { validArchiveIndexName } from './archive-index.mjs'
+import { validDate } from './dates.mjs'
 import { driverState, DRIVER } from './setup.mjs'
 
 export const BUDGETS = { memory: 80, state: 200 }
@@ -46,7 +49,44 @@ function brokenLinks(file) {
   return out
 }
 
-export function runCheck(project) {
+// --- baseline (ADR-0025) ------------------------------------------------------
+// `strata check --baseline` records today's warnings; later runs report only
+// warnings that are new and fold the known ones into one count line. Errors are
+// never baselined.
+export const BASELINE_FILE = '.strata/check-baseline.json'
+
+export function findingKey(f) { return `${f.code}|${String(f.path).replace(/:\d+$/, '')}|${f.detail}` }
+
+export function readBaseline(project) {
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(project, BASELINE_FILE), 'utf8'))
+    const list = Array.isArray(j.warnings) ? j.warnings : []
+    return { created: j.created || '', count: list.length, keys: new Set(list.map(findingKey)) }
+  } catch { return null }
+}
+
+export function writeBaseline(project, findings) {
+  const seen = new Set()
+  const warnings = []
+  for (const f of findings.filter((x) => x.level === 'warn')) {
+    const w = { code: f.code, path: String(f.path).replace(/:\d+$/, ''), detail: f.detail }
+    const k = findingKey(w)
+    if (seen.has(k)) continue
+    seen.add(k)
+    warnings.push(w)
+  }
+  warnings.sort((a, b) => (findingKey(a) < findingKey(b) ? -1 : 1))
+  const body = {
+    version: 1,
+    created: today(),
+    note: 'Known strata check warnings. strata check reports only warnings that are not listed here. Rewrite with strata check --baseline; delete the file to see every warning again.',
+    warnings,
+  }
+  writeText(path.join(project, BASELINE_FILE), JSON.stringify(body, null, 2) + '\n')
+  return warnings.length
+}
+
+export function runCheck(project, { baseline = true } = {}) {
   const findings = []
   const add = (level, code, where, detail) => findings.push({ level, code, path: where, detail })
   const sd = path.join(project, '.strata')
@@ -56,6 +96,7 @@ export function runCheck(project) {
   if (manifest == null) add('error', 'no-manifest', '.strata/MANIFEST.md', 'missing; run /strata:init')
   else {
     const fm = parseFrontmatter(manifest).data
+    if (fm.archive_index && !validArchiveIndexName(String(fm.archive_index).trim())) add('error', 'manifest-archive-index', '.strata/MANIFEST.md', `archive_index '${fm.archive_index}' must be a file name in .strata/issues/archive/, such as README.md`)
     if (String(fm.layout_version || '') !== '3') {
       if (fm.strata_version) add('error', 'legacy-stamp', '.strata/MANIFEST.md', `strata_version: ${fm.strata_version}; migrate with MIGRATIONS.md Rung 3`)
       else add('error', 'layout-version', '.strata/MANIFEST.md', 'no layout_version: 3 in the frontmatter')
@@ -93,7 +134,11 @@ export function runCheck(project) {
       if (!ids.has(i.id)) ids.set(i.id, [])
       ids.get(i.id).push(where)
     }
-    if (i.status === 'parked' && !i.revive) add('error', 'parked-no-revive', where, 'parked without a revive-when: trigger')
+    if (i.status === 'parked' && !i.revive && !i.reviveOn) add('error', 'parked-no-revive', where, 'parked without a revive-when: trigger or a revive-on: date')
+    for (const k of ['reviveOn', 'due']) {
+      const key = k === 'reviveOn' ? 'revive-on' : 'due'
+      if (i[k] && !validDate(i[k])) add('error', 'bad-date', where, `${key}: '${i[k]}' is not a YYYY-MM-DD date`)
+    }
     if (!i.archived && TERMINAL.includes(i.status)) add('warn', 'terminal-not-archived', where, `${i.status}; strata save --prepare moves it to issues/archive/`)
     if (i.archived && LIVE.includes(i.status)) add('warn', 'live-in-archive', where, `status ${i.status} inside issues/archive/`)
   }
@@ -107,6 +152,7 @@ export function runCheck(project) {
     if (!ORIGINS.includes(l.origin)) add('error', 'learning-bad-origin', where, `origin '${l.origin}' is not one of ${ORIGINS.join(' | ')}`)
     if (l.hot !== null && l.hot !== 'true' && l.hot !== 'false') add('error', 'learning-bad-hot', where, `hot '${l.hot}' must be true or false`)
   }
+  for (const e of buildTriggerIndex(project).errors) add('error', 'learning-bad-match', e.file, `${e.field}: '${e.value}' ${e.reason}`)
 
   // 5. Generated views and hot-rules blocks
   const v = syncViews(project, { check: true })
@@ -142,10 +188,21 @@ export function runCheck(project) {
   if (attrs.includes(`merge=${DRIVER}`)) {
     const st = driverState(project)
     if (st.inGit && !st.configured) add('warn', 'merge-driver-missing', '.gitattributes', `this clone has no merge.${DRIVER}.driver; run strata setup once`)
+    else if (st.inGit && st.missing.length) add('warn', 'merge-driver-broken', '.gitattributes', `merge.${DRIVER}.driver points at a missing file (${st.missing[0]}); run strata setup once`)
   }
 
-  const errors = findings.filter((f) => f.level === 'error').length
-  return { ok: errors === 0, errors, warnings: findings.length - errors, findings }
+  let shown = findings
+  let baselined = 0
+  const base = baseline ? readBaseline(project) : null
+  if (base) {
+    shown = findings.filter((f) => f.level !== 'warn' || !base.keys.has(findingKey(f)))
+    baselined = findings.length - shown.length
+  }
+  const errors = shown.filter((f) => f.level === 'error').length
+  return {
+    ok: errors === 0, errors, warnings: shown.length - errors, findings: shown,
+    baselined, baseline: base ? { file: BASELINE_FILE, created: base.created } : null,
+  }
 }
 
 export function formatCheck(res, { limit = 0 } = {}) {
@@ -155,5 +212,6 @@ export function formatCheck(res, { limit = 0 } = {}) {
   const list = limit ? res.findings.slice(0, limit) : res.findings
   const lines = [head, ...list.map((f) => `  [${f.level}] ${f.path}: ${f.detail}`)]
   if (limit && res.findings.length > limit) lines.push(`  … ${res.findings.length - limit} more (run strata check)`)
+  if (res.baselined) lines.push(`  ${res.baselined} known warning${res.baselined === 1 ? '' : 's'} not shown (baselined in ${res.baseline.file}${res.baseline.created ? ` on ${res.baseline.created}` : ''}; strata check --all lists them)`)
   return lines.join('\n')
 }

@@ -15,6 +15,7 @@ import { parseFrontmatter } from './frontmatter.mjs'
 import {
   readIssues, readLearnings, hotSubset, byTrigger, byIssueOrder, byId, cell,
 } from './model.mjs'
+import { writeTriggerIndex } from './triggers.mjs'
 import { syncHotRules, findBlock, BEGIN as HOT_BEGIN, END as HOT_END, isRuleLine, isOverflowLine, ruleKey, innerFromRules } from './adapters.mjs'
 
 export const MARKER_RE = /^<!--\s*GENERATED\b.*-->[ \t]*$/m
@@ -52,6 +53,13 @@ const NO_AREA = '(no area)'
 
 function issueLink(i) { return `[${cell(i.id || path.basename(i.rel, '.md'))}](${i.rel})` }
 
+// The Revive-when cell: a revive-on date first, then any trigger text.
+function reviveText(i) {
+  const on = String(i.reviveOn || '').trim()
+  if (!on) return i.revive
+  return [`on or after ${on}`, i.revive && !i.revive.includes(on) ? i.revive : ''].filter(Boolean).join('; ')
+}
+
 export function issueRows(kind, issues) {
   const status = { active: 'in-progress', open: 'open', parked: 'parked' }[kind]
   const sel = issues.filter((i) => !i.archived && i.status === status && i.frontmatter && i.id)
@@ -60,7 +68,7 @@ export function issueRows(kind, issues) {
     let line
     if (kind === 'active') line = `| ${issueLink(i)} | ${cell(i.type)} | ${cell(i.severity)} | ${cell(i.area)} | ${cell(i.what, 140)} |`
     else if (kind === 'open') line = `| ${issueLink(i)} | ${cell(i.type)} | ${cell(i.severity)} | ${cell(i.what, 140)} |`
-    else line = `| ${issueLink(i)} | ${cell(i.what, 140)} | ${cell(i.revive, 160)} |`
+    else line = `| ${issueLink(i)} | ${cell(i.what, 140)} | ${cell(reviveText(i), 160)} |`
     return { key: i.id || i.rel, line, group: kind === 'open' ? (String(i.area || '').replace(/\s+/g, ' ').trim() || NO_AREA) : undefined }
   })
 }
@@ -251,7 +259,11 @@ export function syncViews(project, { check = false } = {}) {
     }
   }
   const hot = syncHotRules(project, { check })
-  return { external, views, hot }
+  // The lesson-trigger index is a git-ignored cache (ADR-0020): refreshed here,
+  // never reported as drift, rebuilt by the hook when it is stale.
+  let triggers
+  try { triggers = writeTriggerIndex(project, { check }) } catch (e) { triggers = { state: 'error', rules: 0, errors: [], detail: e.message } }
+  return { external, views, hot, triggers }
 }
 
 export function viewsSummary(res) {
@@ -260,6 +272,7 @@ export function viewsSummary(res) {
   for (const v of res.views) lines.push(`${v.file}: ${v.state}`)
   for (const h of res.hot.results) lines.push(`${h.file} hot-rules block: ${h.state}`)
   if (res.hot.overflow) lines.push(`hot rules: ${res.hot.overflow} over the adapter block budget; curate the hot set`)
+  if (res.triggers && res.triggers.rules) lines.push(`lesson triggers: ${res.triggers.rules} learning${res.triggers.rules === 1 ? '' : 's'} with match: or paths: (${res.triggers.state})`)
   return lines.join('\n')
 }
 

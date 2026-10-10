@@ -10,7 +10,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
-import { parseArgs, resolveRoots, print, UsageError } from './lib/core.mjs'
+import { parseArgs, resolveRoots, print, UsageError, plural, relPosix } from './lib/core.mjs'
 import * as journal from './lib/journal.mjs'
 import { syncHotRules } from './lib/adapters.mjs'
 import { syncViews, viewsSummary, drifted, mergeDriver } from './lib/views.mjs'
@@ -18,13 +18,17 @@ import { setup, formatSetup, driverState } from './lib/setup.mjs'
 import { newIssue, nextAdr } from './lib/ids.mjs'
 import { driftList, formatDrift } from './lib/drift.mjs'
 import { writePointers } from './lib/pointer.mjs'
-import { runCheck, formatCheck } from './lib/check.mjs'
+import { runCheck, formatCheck, writeBaseline, BASELINE_FILE } from './lib/check.mjs'
 import { prepare, formatPrepare } from './lib/save.mjs'
 import { inboxSummary, formatInbox, clearInbox } from './lib/inbox.mjs'
+import { findIssue, readIssues } from './lib/model.mjs'
+import { datedLines, dueList, formatDue } from './lib/dates.mjs'
+import { writeTriggerIndex, buildTriggerIndex, matchLessons, formatLessons, pathForms, subjectOf } from './lib/triggers.mjs'
 
 const HELP = `strata <subcommand> [options]     (every subcommand takes --root <dir>)
 
   journal add --kind <kind> --title <t> [--text <t> | --text - (stdin)] [--lineage <l>] [--ref <path>]... [--filed <path>]
+              [--refs <issue-id> --route append]   save appends it to that issue as a dated update
   journal list [--json]
   journal clear (--all | --id <id>...)
   status [--json]                 load-time summary: pending captures, inbox, views
@@ -35,12 +39,17 @@ const HELP = `strata <subcommand> [options]     (every subcommand takes --root <
   views [--check]                 regenerate ACTIVE/OPEN/PARKED, learnings INDEX, the MEMORY table, hot rules
   views --merge-driver %O %A %B %P   the git merge driver for generated views
   setup [--dry-run]               one-time install: inbox ignore file, merge driver, hot-rules block
-  new-issue --slug <s> [--title <t>] [--type --severity --area --status --revive] [--dry-run]
+  new-issue --slug <s> [--title <t>] [--type --severity --area --status --revive --revive-on --due] [--dry-run]
                                   next free id for today (tree, worktrees, branches), file from _TEMPLATE.md
   next-adr [--dir <d>] [--dry-run]   next free decision-record number
   drift [--since <rev>] [--json]  commits since the last save that no record mentions
   pointer [--dry-run]             write or refresh the Claude auto-memory pointer (only when the folder exists)
+  due [--days N] [--json]         dated items: parked revive-on dates and due dates, next N days (default 7)
   check [--json]                  validate budgets, frontmatter, ids, links, view drift (exit 1 on errors)
+  check --baseline                record today's warnings; later runs show only new ones as findings
+  check --all                     ignore the baseline and list every warning
+  triggers [--command <c>] [--path <p>]...   rebuild the lesson-trigger index; with a command
+                                  or paths, show which learnings would fire before that call
   save --prepare [--dry-run]      every mechanical save step, then what needs judgment
 
 kinds: ${journal.KINDS.join(', ')}
@@ -69,7 +78,7 @@ const commands = {
 
   journal(argv) {
     const [sub, ...rest] = argv
-    const args = parseArgs(rest, { bools: ['json', 'all'], multi: ['ref', 'id'] })
+    const args = parseArgs(rest, { bools: ['json', 'all'], multi: ['ref', 'refs', 'id'] })
     const r = resolveRoots(args.root)
     if (sub === 'add') {
       // `--text -` reads the text from stdin (a heredoc or a pipe). Stdin is only
@@ -78,7 +87,14 @@ const commands = {
       if (text === '-') text = readStdin()
       const e = journal.addEntry(r, { ...args, text })
       const n = journal.readJournal(r.shared).length
-      out(args, { entry: e, pending: n }, `journal: +1 ${e.kind} (${e.id}). ${n} pending.`)
+      let note = ''
+      if (e.route === 'append') {
+        const target = findIssue(r.project, e.refs[0])
+        note = target && !target.archived
+          ? ` /strata:save appends it to ${target.rel} as a dated update.`
+          : ` Note: no live issue '${e.refs[0]}' in this tree; /strata:save will leave the entry for judgment.`
+      }
+      out(args, { entry: e, pending: n }, `journal: +1 ${e.kind} (${e.id}). ${n} pending.${note}`)
       return 0
     }
     if (sub === 'list') {
@@ -123,10 +139,53 @@ const commands = {
     return args.check && stale.length ? 1 : 0
   },
 
-  check(argv) {
+  triggers(argv) {
+    const args = parseArgs(argv, { bools: ['json'], multi: ['path'] })
+    const r = resolveRoots(args.root)
+    const res = writeTriggerIndex(r.project)
+    const index = buildTriggerIndex(r.project)
+    const command = typeof args.command === 'string' ? args.command : null
+    const paths = [].concat(args.path || []).filter((p) => typeof p === 'string')
+    const lines = [`lesson triggers: ${plural(res.rules, 'learning')} with match: or paths: (${relPosix(r.project, res.file)}: ${res.state})`]
+    for (const e of res.errors) lines.push(`  [error] ${e.file}: ${e.field} '${e.value}' ${e.reason}`)
+    let hits = null
+    if (command != null || paths.length) {
+      const subject = { tool: command != null ? 'Bash' : 'Edit', command, paths: [] }
+      const forms = new Set()
+      for (const p of paths) for (const f of pathForms(p, { cwd: process.cwd(), project: r.project })) forms.add(f)
+      if (command != null) {
+        for (const f of subjectOf({ tool_name: 'Bash', tool_input: { command }, cwd: process.cwd() }, r.project).paths) forms.add(f)
+      }
+      subject.paths = [...forms]
+      hits = matchLessons(index, subject)
+      lines.push(hits.length ? formatLessons(hits, { tool: subject.tool }) : 'No learning fires for that.')
+    }
+    out(args, { ...res, hits }, lines.join('\n'))
+    return res.errors.length ? 1 : 0
+  },
+
+  due(argv) {
     const args = parseArgs(argv, { bools: ['json'] })
     const r = resolveRoots(args.root)
-    const res = runCheck(r.project)
+    const days = args.days === undefined ? 7 : Number(args.days)
+    if (!Number.isInteger(days) || days < 0) throw new UsageError('strata due: --days takes a whole number of days, 0 or more')
+    const res = dueList(r.project, { days })
+    out(args, res, formatDue(res))
+    return 0
+  },
+
+  check(argv) {
+    const args = parseArgs(argv, { bools: ['json', 'baseline', 'all'] })
+    const r = resolveRoots(args.root)
+    if (args.baseline) {
+      const res = runCheck(r.project, { baseline: false })
+      const n = writeBaseline(r.project, res.findings)
+      out(args, { ...res, baselineWritten: n, file: BASELINE_FILE },
+        `strata check: baseline written: ${plural(n, 'warning')} in ${BASELINE_FILE}. Later runs show only new warnings.` +
+        (res.errors ? `\nErrors are never baselined. Fix ${res.errors === 1 ? 'this one' : `these ${res.errors}`}:\n` + formatCheck({ ...res, findings: res.findings.filter((f) => f.level === 'error') }).split('\n').slice(1).join('\n') : ''))
+      return res.ok ? 0 : 1
+    }
+    const res = runCheck(r.project, { baseline: !args.all })
     out(args, res, formatCheck(res))
     return res.ok ? 0 : 1
   },
@@ -151,7 +210,7 @@ const commands = {
     }
     if (sub === 'clear') {
       const res = clearInbox(r.shared)
-      out(args, res, `inbox: cleared ${res.cleared} stub${res.cleared === 1 ? '' : 's'}` + (res.pruned ? `, pruned ${res.pruned} stale cursor${res.pruned === 1 ? '' : 's'}` : '') + '.')
+      out(args, res, `inbox: cleared ${res.cleared} stub${res.cleared === 1 ? '' : 's'}` + (res.benign ? ` and ${res.benign} benign-exit count${res.benign === 1 ? '' : 's'}` : '') + (res.pruned ? `, pruned ${res.pruned} stale cursor${res.pruned === 1 ? '' : 's'}` : '') + '.')
       return 0
     }
     throw new UsageError('strata inbox: use summary or clear')
@@ -208,18 +267,30 @@ const commands = {
     const views = syncViews(r.project, { check: true })
     const stale = drifted(views)
     const lines = [journal.journalSummaryLine(entries), formatInbox(sum, { limit: 5 })]
+    const dated = datedLines(readIssues(r.project))
+    lines.push(...dated.lines)
     lines.push(stale.length ? `Views: ${stale.length} differ from a fresh render (${stale.join(', ')}); /strata:save regenerates them.` : 'Views: current.')
     // Projects initialized before 0.1.0 lack the merge driver and the hot-rules block.
     const missing = []
+    const drv = driverState(r.project)
     if (!fs.existsSync(path.join(r.project, '.gitattributes')) || !fs.readFileSync(path.join(r.project, '.gitattributes'), 'utf8').includes('merge=strata-views')) missing.push('views merge driver')
-    else if (driverState(r.project).inGit && !driverState(r.project).configured) missing.push('merge driver in this clone')
+    else if (drv.inGit && !drv.configured) missing.push('merge driver in this clone')
+    else if (drv.inGit && drv.missing.length) lines.push(`Setup: the views merge driver points at a file that no longer exists (${drv.missing[0]}), so git cannot merge the views. Run /strata:init once (Codex: Skill(name='strata', args='init')) to repair it.`)
     if (syncHotRules(r.project, { check: true }).results.some((x) => x.state === 'no-markers')) missing.push('hot-rules block in CLAUDE.md / AGENTS.md')
     if (missing.length) lines.push(`Setup: missing ${missing.join(', ')}. Run /strata:init once (Codex: Skill(name='strata', args='init')); it runs strata setup and changes nothing else.`)
     out(args, {
       roots: r,
       journal: { pending: entries.length, kinds: Object.fromEntries(journal.kindCounts(entries)) },
-      inbox: { total: sum.total, counts: sum.counts, repeated: sum.repeated },
+      inbox: { total: sum.total, counts: sum.counts, repeated: sum.repeated, benign: sum.benign, refused: sum.refused },
       views: { drifted: stale },
+      dated: {
+        reached: dated.parked.reached.map((e) => ({ id: e.issue.id, date: e.date })),
+        text: dated.parked.text.map((e) => ({ id: e.issue.id, revive: e.issue.revive })),
+        later: dated.parked.later.length,
+        overdue: dated.due.overdue.map((e) => ({ id: e.issue.id, date: e.date })),
+        today: dated.due.today.map((e) => e.issue.id),
+        dueLater: dated.due.later.length,
+      },
       setup: { missing: lines.filter((l) => l.startsWith('Setup:')) },
     }, lines.join('\n'))
     return 0

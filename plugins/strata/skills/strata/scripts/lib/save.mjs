@@ -4,23 +4,17 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { readLf, writeText, exists, relPosix, git, inGit, today, plural } from './core.mjs'
-import { readIssues, TERMINAL, cell } from './model.mjs'
+import { readIssues, findIssue, TERMINAL, cell } from './model.mjs'
+import { ARCHIVE_INDEX_HEAD, archiveIndexFile, findArchiveTable, archiveRow, cellsOfRow } from './archive-index.mjs'
 import { syncViews } from './views.mjs'
 import { runCheck, BUDGETS } from './check.mjs'
-import { readJournal, journalSummaryLine } from './journal.mjs'
+import { readJournal, journalSummaryLine, markFiled } from './journal.mjs'
 import { inboxSummary } from './inbox.mjs'
 import { driverState, installDriver } from './setup.mjs'
 import { driftList, recordSaveMarker } from './drift.mjs'
 import { writePointers } from './pointer.mjs'
+import { datedLines } from './dates.mjs'
 
-const ARCHIVE_INDEX_HEAD = [
-  '# Closed issues',
-  '',
-  'Resolved and wont-fix items, moved here by `/strata:save`. One row per item, in the order they closed. Grep this folder for history.',
-  '',
-  '| Id | Status | Closed | What |',
-  '|---|---|---|---|',
-]
 
 // --- 1. archive terminal issues ---------------------------------------------------
 function trackedState(project, file) {
@@ -37,8 +31,13 @@ function archiveIssues(project, ctx) {
   const issues = readIssues(project).filter((i) => i.frontmatter && i.id && TERMINAL.includes(i.status) && i.topLevel)
   if (!issues.length) return
   const archiveDir = path.join(project, '.strata', 'issues', 'archive')
-  const indexFile = path.join(archiveDir, 'INDEX.md')
+  const target = archiveIndexFile(project)
+  const indexFile = target.file
+  const indexRel = relPosix(project, indexFile)
   let index = readLf(indexFile)
+  const table = index != null ? findArchiveTable(index.split('\n')) : null
+  const header = table ? table.header : cellsOfRow(ARCHIVE_INDEX_HEAD[4])
+  const has = (id) => index != null && (index.includes(`[${id}](`) || index.split('\n').some((l) => /^\s*\|/.test(l) && cellsOfRow(l)[0] === id))
   const rows = []
   for (const i of issues) {
     const st = trackedState(project, i.file)
@@ -58,15 +57,75 @@ function archiveIssues(project, ctx) {
       }
     }
     const id = i.id || path.basename(i.file, '.md')
-    if (!index || !index.includes(`[${id}](`)) rows.push(`| [${cell(id)}](${path.basename(i.file)}) | ${cell(i.status)} | ${today()} | ${cell(i.what, 140)} |`)
+    if (!has(id)) rows.push(archiveRow(header, { id, file: path.basename(i.file), status: i.status, closed: today(), what: i.what }))
   }
   if (rows.length) {
-    ctx.changed.push(`append ${plural(rows.length, 'row')} to .strata/issues/archive/INDEX.md`)
+    ctx.changed.push(`append ${plural(rows.length, 'row')} to ${indexRel}`)
     if (!ctx.dryRun) {
-      const base = index == null ? ARCHIVE_INDEX_HEAD.join('\n') + '\n' : (index.endsWith('\n') ? index : index + '\n')
-      writeText(indexFile, base + rows.join('\n') + '\n')
+      let next
+      if (index == null) next = ARCHIVE_INDEX_HEAD.join('\n') + '\n' + rows.join('\n') + '\n'
+      else if (table) {
+        const lines = index.split('\n')
+        lines.splice(table.end, 0, ...rows)
+        next = lines.join('\n')
+      } else {
+        next = index.replace(/\n*$/, '\n\n') + ARCHIVE_INDEX_HEAD.slice(4).join('\n') + '\n' + rows.join('\n') + '\n'
+      }
+      writeText(indexFile, next)
     }
   }
+}
+
+// --- 0. journal entries routed to an issue (ADR-0022) -------------------------------
+function localDate(ts) {
+  const d = new Date(ts)
+  if (Number.isNaN(d.getTime())) return today()
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+
+// `**Update <date> (journal <id>):** <title>. <text>`
+export function updateParagraph(e) {
+  const title = String(e.title || '').trim()
+  let text = String(e.text || '').trim()
+  if (text && title && text.startsWith(title)) text = text.slice(title.length).trim()
+  const head = title && !/[.!?:]$/.test(title) ? `${title}.` : title
+  return `**Update ${localDate(e.ts)} (journal ${e.id}):** ${[head, text].filter(Boolean).join(' ')}`.trim()
+}
+
+// Insert before the Resolution line, or at the end, with blank lines around.
+export function insertUpdate(body, para) {
+  const lines = body.replace(/\n*$/, '').split('\n')
+  const at = lines.findIndex((l) => /^\*\*Resolution:\*\*/.test(l))
+  if (at < 0) return lines.join('\n') + '\n\n' + para + '\n'
+  const before = lines.slice(0, at)
+  while (before.length && !before[before.length - 1].trim()) before.pop()
+  return [...before, '', para, '', ...lines.slice(at)].join('\n') + '\n'
+}
+
+function appendJournalUpdates(roots, ctx) {
+  const { project } = roots
+  const pending = readJournal(roots.shared).filter((e) => e.route === 'append' && !e.filed)
+  const filed = {}
+  for (const e of pending) {
+    const ref = (e.refs || [])[0]
+    const target = findIssue(project, ref)
+    if (!target || target.archived || !target.topLevel) {
+      ctx.judgment.push(`journal ${e.id} asks to be appended to '${ref}', which is not a live issue here; route it by hand`)
+      continue
+    }
+    const rel = relPosix(project, target.file)
+    const cur = readLf(target.file)
+    if (cur == null) continue
+    if (cur.includes(`(journal ${e.id})`)) { filed[e.id] = rel; continue }
+    ctx.changed.push(`append journal ${e.id} to ${rel} as a dated update`)
+    ctx.appended = (ctx.appended || 0) + 1
+    if (!ctx.dryRun) {
+      writeText(target.file, insertUpdate(cur, updateParagraph(e)))
+      filed[e.id] = rel
+    }
+  }
+  if (!ctx.dryRun) markFiled(roots, filed)
 }
 
 // --- 2. roll old sessions out of project_state.md -----------------------------------
@@ -148,6 +207,7 @@ export async function prepare(roots, { dryRun = false, ...opts } = {}) {
   const ctx = { dryRun, changed: [], judgment: [], info: {}, opts }
   const { project } = roots
 
+  appendJournalUpdates(roots, ctx)
   archiveIssues(project, ctx)
   rollSessions(project, ctx)
 
@@ -183,24 +243,39 @@ export async function prepare(roots, { dryRun = false, ...opts } = {}) {
 
   const entries = readJournal(roots.shared)
   ctx.info.journal = entries.length
-  if (entries.length) ctx.judgment.unshift(`${journalSummaryLine(entries)} Then run strata journal clear --all.`)
+  if (entries.length) {
+    const n = ctx.appended || 0
+    const verb = ctx.dryRun ? 'would be appended' : n === 1 ? 'was appended' : 'were appended'
+    const appended = n ? ` ${n} ${verb} to ${n === 1 ? 'its issue' : 'their issues'} by save --prepare${ctx.dryRun ? '' : ' and marked filed'}; route the rest.` : ''
+    ctx.judgment.unshift(`${journalSummaryLine(entries)}${appended} Then run strata journal clear --all.`)
+  }
 
   const inbox = inboxSummary(roots.shared)
-  ctx.info.inbox = { total: inbox.total, counts: inbox.counts, repeated: inbox.repeated }
-  if (inbox.total) {
+  ctx.info.inbox = { total: inbox.total, counts: inbox.counts, repeated: inbox.repeated, benign: inbox.benign, refused: inbox.refused }
+  if (inbox.total || inbox.benign.total) {
     const rep = inbox.repeated.slice(0, 5).map((g) => `${g.count}x ${g.command || g.signal}`).join('; ')
     ctx.judgment.push(`${inbox.line}${rep ? ` Repeated: ${rep}.` : ''} Promote what is worth keeping, then run strata inbox clear.`)
   }
+  if (inbox.refused.length) {
+    ctx.judgment.push(`steps refused for the agent; hand them to the operator: ${inbox.refused.slice(0, 10).map((g) => `${g.command || '(command not recorded)'} (${g.signal}${g.count > 1 ? `, ${g.count}x` : ''})`).join('; ')}${inbox.refused.length > 10 ? `; ${inbox.refused.length - 10} more` : ''}`)
+  }
 
-  const issues = readIssues(project)
-  const parked = issues.filter((i) => i.status === 'parked')
-  if (parked.length) ctx.judgment.push(`parked: check each revive-when against this session: ${parked.map((i) => `${i.id} (${i.revive || 'no trigger'})`).join('; ')}`)
+  // Dated items (ADR-0023): only reached dates and text triggers are listed.
+  const dated = datedLines(readIssues(project), today(), { textLimit: 1000 })
+  const p = dated.parked
+  if (p.reached.length) ctx.judgment.push(`parked: revive date reached, revive or re-park: ${p.reached.map((e) => `${e.issue.id} (${e.source} ${e.date})`).join('; ')}`)
+  if (p.text.length) ctx.judgment.push(`parked: check each revive-when against this session: ${p.text.map((e) => `${e.issue.id} (${e.issue.revive || 'no trigger'})`).join('; ')}`)
+  if (p.later.length) ctx.judgment.push(`parked: ${plural(p.later.length, 'item')} wait for a later date (next ${p.later[0].date}); strata due lists them`)
+  const d = dated.due
+  if (d.overdue.length || d.today.length) ctx.judgment.push(`due: ${[...d.overdue.map((e) => `${e.issue.id} overdue since ${e.date}`), ...d.today.map((e) => `${e.issue.id} due today`)].join('; ')}`)
+  ctx.info.dated = { reached: p.reached.length, text: p.text.length, later: p.later.length, overdue: d.overdue.length, dueToday: d.today.length, dueLater: d.later.length }
 
   const chk = runCheck(project)
   // After a dry run the views are expected to differ; do not report that twice.
   const findings = chk.findings.filter((f) => !(dryRun && (f.code === 'view-drift' || f.code === 'hot-rules-drift' || f.code === 'terminal-not-archived' || (f.code === 'budget-state' && ctx.changed.some((c) => c.startsWith('roll '))))))
   ctx.check = { errors: findings.filter((f) => f.level === 'error').length, warnings: findings.filter((f) => f.level === 'warn').length, findings }
   for (const f of findings) ctx.judgment.push(`check [${f.level}] ${f.path}: ${f.detail}`)
+  if (chk.baselined) ctx.info.baselined = chk.baselined
   return ctx
 }
 

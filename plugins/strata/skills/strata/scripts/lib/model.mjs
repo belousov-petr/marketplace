@@ -3,7 +3,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
-import { parseFrontmatter, labelLine, labelParagraph, firstParagraph, firstHeading } from './frontmatter.mjs'
+import { parseFrontmatter, labelLine, labelParagraph, firstParagraph, firstHeading, firstSentence, asList } from './frontmatter.mjs'
 import { walk, relPosix, readLf } from './core.mjs'
 
 export const ISSUE_VIEW_FILES = new Set(['ACTIVE.md', 'OPEN.md', 'PARKED.md', 'README.md', '_TEMPLATE.md', 'INDEX.md'])
@@ -39,10 +39,22 @@ export function readIssues(project, { includeArchive = false } = {}) {
       ...fm.data,
       id: fm.data.id || '', status: fm.data.status || '', type: fm.data.type || '',
       severity: fm.data.severity || '', area: fm.data.area || '', what,
-      revive: fm.data['revive-when'] || '',
+      revive: String(fm.data['revive-when'] || ''),
+      reviveOn: String(fm.data['revive-on'] || '').trim(), due: String(fm.data.due || '').trim(),
     })
   }
   return out
+}
+
+// An issue by id, by its path under issues/, or by its file name.
+export function findIssue(project, ref) {
+  const want = String(ref || '').trim().replace(/\\/g, '/').replace(/^\.strata\/issues\//, '')
+  if (!want) return null
+  const all = readIssues(project, { includeArchive: true }).filter((i) => i.frontmatter)
+  const byId = all.filter((i) => i.id === want)
+  const hit = byId.find((i) => !i.archived) || byId[0] ||
+    all.find((i) => i.rel === want || i.rel === `${want}.md` || path.basename(i.rel) === want || path.basename(i.rel, '.md') === want)
+  return hit || null
 }
 
 export function readLearnings(project) {
@@ -59,8 +71,9 @@ export function readLearnings(project) {
     const lesson = labelParagraph(fm.body, 'Lesson') || firstParagraph(fm.body)
     out.push({
       file, name, slug: name.replace(/\.md$/, ''), frontmatter: fm.present,
-      trigger: fm.data.trigger || '', appliesWhen: fm.data['applies-when'] || '',
+      trigger: String(fm.data.trigger || ''), appliesWhen: String(fm.data['applies-when'] || ''),
       origin: fm.data.origin || '', hot: Object.prototype.hasOwnProperty.call(fm.data, 'hot') ? String(fm.data.hot).trim().toLowerCase() : null,
+      match: asList(fm.data.match), paths: asList(fm.data.paths),
       lesson,
     })
   }
@@ -102,10 +115,4 @@ export function cell(v, max = 0) {
   return s
 }
 
-export function firstSentence(text, max = 220) {
-  const t = String(text || '').replace(/\s+/g, ' ').trim()
-  const m = /^(.+?[.!?])(?=\s|$)/.exec(t)
-  let s = m ? m[1] : t
-  if (s.length > max) s = s.slice(0, max - 1).trimEnd() + '…'
-  return s
-}
+export { firstSentence }
