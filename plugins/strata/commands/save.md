@@ -29,7 +29,7 @@ State the detected mode before proceeding.
 ### 2. Read what is pending
 
 - `strata journal list`: every pending capture. Each one is routed this save.
-- `strata save --prepare --dry-run`: the mechanical plan (journal entries it will append to their issues, archive moves, session rollover, regenerated views and hot-rules blocks), the inbox counts, repeated failures and steps refused for the agent, the drift list, parked items whose date has come or whose trigger is text, due dates, and check findings.
+- `strata save --prepare --dry-run`: the mechanical plan (journal entries it will append to their issues, archive moves, session rollover, regenerated views and hot-rules blocks), the inbox counts, repeated failures and steps refused for the agent, the drift list, parked items whose date has come or whose trigger is text, due dates, and check findings. If it opens with a warning that a newer strata is installed than the one this session runs, stop and ask the operator to start a new session before saving, so one save does not mix two versions.
 - `memory/MEMORY.md`, `memory/project_state.md`, `issues/ACTIVE.md`, plus any issue files touched this session. Do not bulk-read learnings, archives, or the whole backlog.
 
 ### 3. Inventory the session
@@ -81,7 +81,7 @@ Empty plan → say "no changes proposed" and stop. Otherwise, continue directly 
 
 ### 5. Safeguards (before showing the preview)
 
-Per the skill: a conflicted file is never moved; deletions are section-only, never whole files; idempotent on re-run. Take new issue ids from `strata new-issue` and decision numbers from `strata next-adr`, which scan every worktree and recent branch so parallel work does not collide. Dedup new issues against the existing backlog: fold new evidence into an existing item rather than filing a near-duplicate.
+Per the skill: a conflicted file is never moved; deletions are section-only, never whole files; idempotent on re-run. Take new issue ids from `strata new-issue` and decision numbers from `strata next-adr`, which scan every worktree and recent branch so parallel work does not collide. Dedup new issues against the existing backlog: fold new evidence into an existing item rather than filing a near-duplicate. `strata new-issue` helps here. It lists up to five open issues whose title, slug or area share two or more words with the new one, on stderr or in the `duplicates` field of `--json`, and `--dry-run` shows the list before any file exists. Read each listed issue before you fill the new body. If one is the same item, fold the evidence into it and delete the new file.
 
 ### 6. Execute
 
@@ -90,6 +90,8 @@ Immediately after the preview, in this order:
 1. Your writes, appends and updates (new issues via `strata new-issue --slug <slug> …`, then fill the body).
 2. `strata save --prepare`: moves, rollover, regenerated views and hot-rules blocks, the auto-memory pointer, the save marker. It runs last among the writers so the views reflect the post-save world.
 3. `strata journal clear --all` (or `--id <id>` for only the routed ones) and `strata inbox clear`. The cleared journal batch stays in `.strata/inbox/journal.routed.jsonl` until the next clear.
+
+   The clear checks that each chosen entry was filed. An entry passes when it carries a `filed` path, which a `--filed` capture has and which `save --prepare` adds when it appends an entry to its issue. It also passes when at least half of its title words, and at least two, appear in the uncommitted changes under `.strata/` or `docs/`. If any entry fails, the clear changes nothing, lists each one by id and title, and exits 1. File each listed entry and run the clear again. Pass `--force` only for an entry you decided not to keep or filed under different words, and say so in the report. The output counts the forced entries. Outside git the check is skipped with a warning.
 
 Leave everything for one commit. If the project gates commits, say what is ready to commit rather than working around the gate.
 
@@ -126,7 +128,7 @@ A fresh session must be able to: know what happened and why; start the next acti
 
 - Ask the user what to capture; derive it from the journal and the session
 - Ask for y/n after the preview; save executes automatically once invoked
-- Clear the journal before every entry is written to its store
+- Clear the journal before every entry is written to its store, or reach for `--force` to get past a refusal without checking each listed entry
 - Hand-edit generated views; edit items, then `strata views` or `strata save --prepare`
 - Save anything derivable from code or `git log`, or any secret value
 - Write project memory into Claude's auto memory; `save --prepare` keeps only a pointer there

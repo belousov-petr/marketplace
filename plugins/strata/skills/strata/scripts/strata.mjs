@@ -15,7 +15,7 @@ import * as journal from './lib/journal.mjs'
 import { syncHotRules } from './lib/adapters.mjs'
 import { syncViews, viewsSummary, drifted, mergeDriver } from './lib/views.mjs'
 import { setup, formatSetup, driverState } from './lib/setup.mjs'
-import { newIssue, nextAdr } from './lib/ids.mjs'
+import { newIssue, nextAdr, formatDuplicates } from './lib/ids.mjs'
 import { driftList, formatDrift } from './lib/drift.mjs'
 import { writePointers } from './lib/pointer.mjs'
 import { runCheck, formatCheck, writeBaseline, BASELINE_FILE } from './lib/check.mjs'
@@ -24,13 +24,15 @@ import { inboxSummary, formatInbox, clearInbox } from './lib/inbox.mjs'
 import { findIssue, readIssues } from './lib/model.mjs'
 import { datedLines, dueList, formatDue } from './lib/dates.mjs'
 import { writeTriggerIndex, buildTriggerIndex, matchLessons, formatLessons, pathForms, subjectOf } from './lib/triggers.mjs'
+import { versionCheck } from './lib/version.mjs'
 
 const HELP = `strata <subcommand> [options]     (every subcommand takes --root <dir>)
 
   journal add --kind <kind> --title <t> [--text <t> | --text - (stdin)] [--lineage <l>] [--ref <path>]... [--filed <path>]
               [--refs <issue-id> --route append]   save appends it to that issue as a dated update
   journal list [--json]
-  journal clear (--all | --id <id>...)
+  journal clear (--all | --id <id>...) [--force]
+                                  refuses while a chosen entry shows no sign of being filed
   status [--json]                 load-time summary: pending captures, inbox, views
   inbox summary [--json]          inbox counts by category and repeated failures
   inbox clear                     clear the inbox after promotion (cursors are kept)
@@ -78,7 +80,7 @@ const commands = {
 
   journal(argv) {
     const [sub, ...rest] = argv
-    const args = parseArgs(rest, { bools: ['json', 'all'], multi: ['ref', 'refs', 'id'] })
+    const args = parseArgs(rest, { bools: ['json', 'all', 'force'], multi: ['ref', 'refs', 'id'] })
     const r = resolveRoots(args.root)
     if (sub === 'add') {
       // `--text -` reads the text from stdin (a heredoc or a pipe). Stdin is only
@@ -104,10 +106,9 @@ const commands = {
       return 0
     }
     if (sub === 'clear') {
-      const res = journal.clearEntries(r, { ids: args.id, all: args.all })
-      out(args, res, `journal: cleared ${res.cleared}, ${res.kept} still pending.` +
-        (res.cleared ? ' The cleared batch is kept in journal.routed.jsonl until the next clear.' : ''))
-      return 0
+      const res = journal.clearEntries(r, { ids: args.id, all: args.all, force: Boolean(args.force) })
+      out(args, res, journal.formatClear(res))
+      return res.refused ? 1 : 0
     }
     throw new UsageError('strata journal: use add, list or clear')
   },
@@ -229,6 +230,9 @@ const commands = {
     const r = resolveRoots(args.root)
     const res = newIssue(r, { ...args, dryRun: Boolean(args['dry-run']) })
     out(args, res, res.dryRun ? res.id : `${res.id}  ${res.file}`)
+    // The advice goes to stderr, so the id stays the only line on stdout.
+    const dup = args.json ? '' : formatDuplicates(res.duplicates, { dryRun: res.dryRun, file: res.file })
+    if (dup) process.stderr.write(dup + '\n')
     return 0
   },
 
@@ -266,7 +270,9 @@ const commands = {
     const sum = inboxSummary(r.shared)
     const views = syncViews(r.project, { check: true })
     const stale = drifted(views)
+    const version = versionCheck()
     const lines = [journal.journalSummaryLine(entries), formatInbox(sum, { limit: 5 })]
+    if (version.warning) lines.unshift(`Warning: ${version.warning}`)
     const dated = datedLines(readIssues(r.project))
     lines.push(...dated.lines)
     lines.push(stale.length ? `Views: ${stale.length} differ from a fresh render (${stale.join(', ')}); /strata:save regenerates them.` : 'Views: current.')
@@ -292,6 +298,7 @@ const commands = {
         dueLater: dated.due.later.length,
       },
       setup: { missing: lines.filter((l) => l.startsWith('Setup:')) },
+      version,
     }, lines.join('\n'))
     return 0
   },

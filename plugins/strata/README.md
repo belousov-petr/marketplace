@@ -21,7 +21,7 @@ Strata is a plugin for Claude Code and Codex. It writes everything to plain Mark
 - Checks dates for you: parked work with a revive date and issues with a due date show up at load and save only when the date comes. `strata due` lists what is coming.
 - Keeps `strata check` readable in an old project: record today's warnings once as a baseline, and later runs show only new ones.
 - Keeps one capture journal per repository, shared by every git worktree.
-- Puts the hot rules and the capture rule into `CLAUDE.md` and `AGENTS.md`, so subagents and Codex see them too and capture to the journal instead of a tool's private memory.
+- Puts the hot rules and the capture rule into `CLAUDE.md` and `AGENTS.md`, so subagents and Codex see them too and capture to the journal instead of a tool's private memory. A project whose unattended agents run below the repository root can set `hot_rules: session` instead. The rules then reach development sessions through the session hook, and `agent_env:` keeps every strata hook silent in agent runs.
 - Brings all of it current on one command, `/strata:save`, when you close a session.
 - Sets up a new project, or upgrades older memory, in one command.
 - Uses plain Markdown and grep, plus one bundled Node script with no dependencies that does the mechanical chores the same way every time.
@@ -211,13 +211,13 @@ The honest limit: a hook reacts to mechanical signals, so the one moment it can 
 
 The commands lean on one bundled script, [`skills/strata/scripts/strata.mjs`](skills/strata/scripts/strata.mjs). It needs only Node, which the hook already needs, and runs the same on Windows, macOS, and Linux. The agent keeps the judgment: what to capture, where it belongs, how to word it. The script does the parts that should come out the same every time:
 
-- `journal add / list / clear`: the pending-capture journal; `add --refs <issue-id> --route append` has save append the entry to that issue
+- `journal add / list / clear`: the pending-capture journal; `add --refs <issue-id> --route append` has save append the entry to that issue; `clear` refuses to drop an entry that shows no sign of being filed, unless `--force`
 - `status`: what `/strata:load` shows first
 - `views`, `check`, `save --prepare`: regenerate the views and the hot-rules block, validate budgets, frontmatter, ids and links, and run every mechanical save step with a report of what is left for judgment. `check --baseline` records the warnings a project already has, so later runs show only new ones
 - `due`: parked items and issues with a date in the next days
 - `triggers`: rebuild the lesson-trigger index and test which lessons fire for a command or a file
 - `setup`: the one-time merge driver and hot-rules block. The driver runs through a small launcher in the clone's git folder, so a plugin update does not break merges
-- `new-issue`, `next-adr`: ids and decision numbers that do not collide across branches and worktrees
+- `new-issue`, `next-adr`: ids and decision numbers that do not collide across branches and worktrees; `new-issue` also lists open issues that look like duplicates
 - `drift`: commits since the last save that no record mentions
 - `pointer`: the one-line pointer strata keeps in Claude's own auto memory, so that folder does not grow into a second log
 
